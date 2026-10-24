@@ -24,6 +24,7 @@ export interface ResultadoGMS {
     restoMinutos: number;
     segundosFloat: number;
     segundosArredondados: string;
+    houveCarry?: boolean;
   };
 }
 
@@ -31,6 +32,15 @@ export interface ValidacaoCoordenada {
   valido: boolean;
   mensagem?: string;
   tipoDetectado?: TipoCoordenada;
+}
+
+/**
+ * Detecta se o valor possui sinal negativo de acordo com a norma IEEE 754,
+ * tratando corretamente tanto números estritamente negativos quanto o zero negativo (-0.0).
+ */
+export function isSinalNegativo(valor: number): boolean {
+  if (valor < 0) return true;
+  return Object.is(valor, -0) || (valor === 0 && 1 / valor === -Infinity);
 }
 
 /**
@@ -61,7 +71,13 @@ export function validarIntervalo(valor: number, tipo: TipoCoordenada): Validacao
 }
 
 /**
- * Converte valor decimal para Graus, Minutos e Segundos (GMS)
+ * Converte valor decimal para Graus, Minutos e Segundos (GMS) com rigor matemático
+ * sob o padrão IEEE 754.
+ *
+ * Utiliza quantização inteira euclidiana no domínio escalonado para eliminar
+ * cancelamento catastrófico e saídas espúrias de arredondamento (como 60.00" ou 59.999999"),
+ * propagando automaticamente o transporte (carry) para minutos e graus.
+ *
  * Ex: -23.5505 -> 23° 33' 1.80" S
  */
 export function decimalParaGMS(
@@ -70,33 +86,53 @@ export function decimalParaGMS(
   precisaoSegundos: number = 2,
   convencao: ConvencaoDirecao = 'PT'
 ): ResultadoGMS {
+  const negativo = isSinalNegativo(decimal);
   const absoluto = Math.abs(decimal);
-  let graus = Math.floor(absoluto);
-  const restoGraus = absoluto - graus;
-  const minutosFloat = restoGraus * 60;
-  let minutos = Math.floor(minutosFloat);
-  const restoMinutos = minutosFloat - minutos;
-  const segundosFloat = restoMinutos * 60;
 
-  // Lidar com arredondamento nos segundos (ex: 59.9999 -> 60.00)
-  let segundosCalculados = Number(segundosFloat.toFixed(precisaoSegundos));
-  if (segundosCalculados >= 60) {
-    segundosCalculados = 0;
-    minutos += 1;
-    if (minutos >= 60) {
-      minutos = 0;
-      graus += 1;
-    }
+  // Normalização segura da precisão (0 a 10 casas decimais)
+  const p = Math.max(0, Math.min(10, Math.round(precisaoSegundos)));
+  const fator = Math.pow(10, p);
+  const fatorGrau = 3600 * fator;
+  const fatorMinuto = 60 * fator;
+
+  // Quantização escalar no domínio inteiro euclidiano (representável sem perda até 2^53 - 1)
+  const totalUnidades = Math.round(absoluto * 3600 * fator);
+
+  let graus = Math.floor(totalUnidades / fatorGrau);
+  const restoGrausUnidades = totalUnidades % fatorGrau;
+
+  let minutos = Math.floor(restoGrausUnidades / fatorMinuto);
+  const restoMinutosUnidades = restoGrausUnidades % fatorMinuto;
+
+  const segundosNum = restoMinutosUnidades / fator;
+  let segundosFormatado = segundosNum.toFixed(p);
+
+  // Clamp de segurança estrita para fronteiras físicas geográficas (Polo e Antimeridiano)
+  if (tipo === 'latitude' && graus > 90) {
+    graus = 90;
+    minutos = 0;
+    segundosFormatado = (0).toFixed(p);
+  } else if (tipo === 'longitude' && graus > 180) {
+    graus = 180;
+    minutos = 0;
+    segundosFormatado = (0).toFixed(p);
   }
 
-  const segundosFormatado = segundosCalculados.toFixed(precisaoSegundos);
+  // Decomposição contínua preliminar (para memória de cálculo e rastreabilidade didática)
+  const grausPreliminar = Math.floor(absoluto);
+  const restoGrausPreliminar = absoluto - grausPreliminar;
+  const minutosFloatPreliminar = restoGrausPreliminar * 60;
+  const minutosPreliminar = Math.floor(minutosFloatPreliminar);
+  const restoMinutosPreliminar = minutosFloatPreliminar - minutosPreliminar;
+  const segundosFloatPreliminar = restoMinutosPreliminar * 60;
+  const houveCarry = minutos !== minutosPreliminar || graus !== grausPreliminar;
 
-  // Determinar a direção geográfica
+  // Determinar a direção geográfica respeitando IEEE 754 (-0.0)
   let direcao = '';
   let direcaoNome = '';
 
   if (tipo === 'latitude') {
-    if (decimal < 0) {
+    if (negativo) {
       direcao = 'S';
       direcaoNome = 'Sul';
     } else {
@@ -104,7 +140,7 @@ export function decimalParaGMS(
       direcaoNome = 'Norte';
     }
   } else if (tipo === 'longitude') {
-    if (decimal < 0) {
+    if (negativo) {
       direcao = convencao === 'PT' ? 'O' : 'W';
       direcaoNome = 'Oeste';
     } else {
@@ -113,8 +149,8 @@ export function decimalParaGMS(
     }
   } else {
     // Livre / Genérico
-    direcao = decimal < 0 ? '-' : '+';
-    direcaoNome = decimal < 0 ? 'Negativo' : 'Positivo';
+    direcao = negativo ? '-' : '+';
+    direcaoNome = negativo ? 'Negativo' : 'Positivo';
   }
 
   const formatado = `${graus}° ${minutos}' ${segundosFormatado}" ${direcao}`.trim();
@@ -132,12 +168,13 @@ export function decimalParaGMS(
       decimalOriginal: decimal,
       absoluto,
       grausCalculados: graus,
-      restoGraus,
-      minutosFloat,
+      restoGraus: restoGrausPreliminar,
+      minutosFloat: minutosFloatPreliminar,
       minutosCalculados: minutos,
-      restoMinutos,
-      segundosFloat,
+      restoMinutos: restoMinutosPreliminar,
+      segundosFloat: segundosFloatPreliminar,
       segundosArredondados: segundosFormatado,
+      houveCarry,
     },
   };
 }
@@ -162,6 +199,9 @@ export function gmsParaDecimal(
   const sinal = isNegativo ? -1 : 1;
 
   const resultado = sinal * decimalAbsoluto;
+  if (isNegativo && decimalAbsoluto === 0) {
+    return -0;
+  }
   return Number(resultado.toFixed(casasDecimais));
 }
 
@@ -233,21 +273,48 @@ export function gerarCodigoHTMLPuro(): string {
   </div>
 
   <script>
+    function isSinalNegativo(valor) {
+      if (valor < 0) return true;
+      return Object.is(valor, -0) || (valor === 0 && 1 / valor === -Infinity);
+    }
+
     function decimalParaGMS(decimal, tipo) {
+      const isNeg = isSinalNegativo(decimal);
       const absoluto = Math.abs(decimal);
-      const graus = Math.floor(absoluto);
-      const minutosFloat = (absoluto - graus) * 60;
-      const minutos = Math.floor(minutosFloat);
-      const segundos = ((minutosFloat - minutos) * 60).toFixed(2);
-      
-      let direcao = '';
-      if (tipo === 'latitude') {
-        direcao = decimal < 0 ? 'S' : 'N';
-      } else {
-        direcao = decimal < 0 ? 'O' : 'L';
+      const precisao = 2;
+      const fator = Math.pow(10, precisao);
+      const fatorGrau = 3600 * fator;
+      const fatorMinuto = 60 * fator;
+
+      const totalUnidades = Math.round(absoluto * 3600 * fator);
+
+      let graus = Math.floor(totalUnidades / fatorGrau);
+      const restoGraus = totalUnidades % fatorGrau;
+
+      let minutos = Math.floor(restoGraus / fatorMinuto);
+      const restoMinutos = restoGraus % fatorMinuto;
+
+      const segundosNum = restoMinutos / fator;
+      let segundosFormatado = segundosNum.toFixed(precisao);
+
+      if (tipo === 'latitude' && graus > 90) {
+        graus = 90;
+        minutos = 0;
+        segundosFormatado = (0).toFixed(precisao);
+      } else if (tipo === 'longitude' && graus > 180) {
+        graus = 180;
+        minutos = 0;
+        segundosFormatado = (0).toFixed(precisao);
       }
 
-      return graus + '° ' + minutos + "' " + segundos + '" ' + direcao;
+      let direcao = '';
+      if (tipo === 'latitude') {
+        direcao = isNeg ? 'S' : 'N';
+      } else {
+        direcao = isNeg ? 'O' : 'L';
+      }
+
+      return graus + '° ' + minutos + "' " + segundosFormatado + '" ' + direcao;
     }
 
     function converter() {
@@ -258,17 +325,23 @@ export function gerarCodigoHTMLPuro(): string {
       const tipo = document.querySelector('input[name="tipo"]:checked').value;
 
       erro.style.display = 'none';
-      if (input.value === '') {
+      const rawVal = input.value.trim();
+      if (rawVal === '') {
         resultado.classList.remove('ativo');
         return;
       }
 
-      const val = parseFloat(input.value);
+      let val = parseFloat(rawVal.replace(',', '.'));
       if (isNaN(val)) {
         erro.innerText = 'Insira um valor numérico válido.';
         erro.style.display = 'block';
         resultado.classList.remove('ativo');
         return;
+      }
+
+      // Preservar -0 caso o usuário digite -0 ou -0.0
+      if (rawVal.startsWith('-') && val === 0) {
+        val = -0;
       }
 
       if (tipo === 'latitude' && (val < -90 || val > 90)) {

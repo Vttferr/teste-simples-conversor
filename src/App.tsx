@@ -19,6 +19,7 @@ import {
   decimalParaGMS,
   gmsParaDecimal,
   validarIntervalo,
+  isSinalNegativo,
   gerarCodigoHTMLPuro,
   TipoCoordenada,
   ConvencaoDirecao,
@@ -82,11 +83,17 @@ export default function App() {
       return;
     }
 
-    const num = parseFloat(valStr.replace(',', '.'));
+    const cleanStr = valStr.trim().replace(',', '.');
+    let num = parseFloat(cleanStr);
     if (isNaN(num)) {
       setErro('Por favor, digite um número decimal válido (ex: -23.5505).');
       setResultado(null);
       return;
+    }
+
+    // Preservar bit de sinal do zero negativo (-0.0) sob IEEE 754
+    if (cleanStr.startsWith('-') && num === 0) {
+      num = -0;
     }
 
     const validacao = validarIntervalo(num, tipo);
@@ -114,7 +121,12 @@ export default function App() {
     let errLon: string | null = null;
 
     if (latPar.trim()) {
-      const numLat = parseFloat(latPar.replace(',', '.'));
+      const cleanLat = latPar.trim().replace(',', '.');
+      let numLat = parseFloat(cleanLat);
+      if (cleanLat.startsWith('-') && numLat === 0) {
+        numLat = -0;
+      }
+
       if (isNaN(numLat)) {
         errLat = 'Latitude inválida';
       } else {
@@ -125,7 +137,12 @@ export default function App() {
     }
 
     if (lonPar.trim()) {
-      const numLon = parseFloat(lonPar.replace(',', '.'));
+      const cleanLon = lonPar.trim().replace(',', '.');
+      let numLon = parseFloat(cleanLon);
+      if (cleanLon.startsWith('-') && numLon === 0) {
+        numLon = -0;
+      }
+
       if (isNaN(numLon)) {
         errLon = 'Longitude inválida';
       } else {
@@ -523,30 +540,38 @@ export default function App() {
                     {mostrarPassos && (
                       <div className="mt-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-700 space-y-2">
                         <div className="text-slate-500 text-[11px] font-sans font-medium">
-                          Fórmula rigorosa aplicada:
+                          Memória de cálculo rigorosa (IEEE 754):
                         </div>
-                        <div className="p-2 bg-white rounded border border-slate-100 space-y-1">
+                        <div className="p-2.5 bg-white rounded-lg border border-slate-100 space-y-1.5">
                           <div>
                             1. Valor absoluto = <span className="font-semibold">{resultado.passoAPasso.absoluto}</span>
                           </div>
                           <div>
-                            2. Graus = floor({resultado.passoAPasso.absoluto}) = <span className="font-semibold text-sky-700">{resultado.graus}°</span>
+                            2. Graus preliminares = floor({resultado.passoAPasso.absoluto}) = <span className="font-semibold text-sky-700">{Math.floor(resultado.passoAPasso.absoluto)}°</span>
                           </div>
                           <div>
-                            3. Resto = {resultado.passoAPasso.absoluto} - {resultado.graus} = {resultado.passoAPasso.restoGraus.toFixed(6)}
+                            3. Resto dos graus = {resultado.passoAPasso.absoluto} - {Math.floor(resultado.passoAPasso.absoluto)} = {resultado.passoAPasso.restoGraus}°
                           </div>
                           <div>
-                            4. Minutos Float = {resultado.passoAPasso.restoGraus.toFixed(6)} × 60 = {resultado.passoAPasso.minutosFloat.toFixed(4)}'
+                            4. Minutos contínuos = {resultado.passoAPasso.restoGraus} × 60 = {resultado.passoAPasso.minutosFloat}'
                           </div>
                           <div>
-                            5. Minutos = floor({resultado.passoAPasso.minutosFloat.toFixed(4)}) = <span className="font-semibold text-sky-700">{resultado.minutos}'</span>
+                            5. Minutos preliminares = floor({resultado.passoAPasso.minutosFloat}) = <span className="font-semibold text-sky-700">{Math.floor(resultado.passoAPasso.minutosFloat)}'</span>
                           </div>
                           <div>
-                            6. Segundos = ({resultado.passoAPasso.minutosFloat.toFixed(4)} - {resultado.minutos}) × 60 = <span className="font-semibold text-sky-700">{resultado.segundos}"</span>
+                            6. Segundos contínuos = ({resultado.passoAPasso.minutosFloat} - {Math.floor(resultado.passoAPasso.minutosFloat)}) × 60 = {resultado.passoAPasso.segundosFloat}"
                           </div>
                           <div>
-                            7. Sinal ({resultado.passoAPasso.decimalOriginal} &lt; 0) = <span className="font-semibold text-sky-700">{resultado.direcao}</span> ({resultado.direcaoNome})
+                            7. Quantização Inteira (IEEE 754) = <span className="font-semibold text-sky-700">{resultado.graus}° {resultado.minutos}' {resultado.segundos}"</span>
                           </div>
+                          <div>
+                            8. Detecção de Sinal (IEEE 754) = <span className="font-semibold text-sky-700">{resultado.direcao}</span> ({resultado.direcaoNome})
+                          </div>
+                          {resultado.passoAPasso.houveCarry && (
+                            <div className="mt-2 p-2 bg-sky-50 text-sky-800 rounded border border-sky-100 text-[11px] font-sans">
+                              <strong>Ajuste de Arredondamento IEEE 754:</strong> Os segundos atingiram o limiar de quantização da precisão configurada e propagaram transporte (+1) para os minutos/graus, prevenindo saídas anômalas como 60.00" ou 59.999999".
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
