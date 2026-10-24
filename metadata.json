@@ -1,0 +1,6 @@
+{
+  "name": "Calculadora Decimal para GMS",
+  "description": "Calculadora minimalista e precisa de conversão de coordenadas geográficas decimais para Graus, Minutos e Segundos (GMS).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
